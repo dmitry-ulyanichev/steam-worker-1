@@ -1,0 +1,366 @@
+// steam_worker/src/worker_logic.js
+
+const SteamConnector = require('./steam_connector');
+const SteamInviteCleaner = require('./steam_invite_cleaner');
+
+/**
+ * Worker Logic Module
+ * 
+ * Handles all Steam-related operations:
+ * - Slot initialization
+ * - Cleanup of old invites
+ * - Sending friend invites
+ * - Error classification
+ */
+class WorkerLogic {
+  constructor(logger = console) {
+    this.logger = logger;
+    this.steamConnector = new SteamConnector(logger);
+    this.inviteCleaner = new SteamInviteCleaner(logger);
+  }
+
+  /**
+   * Main entry point: Process invites for an account
+   * 
+   * @param {Object} params - Processing parameters
+   * @param {Object} params.account - Steam account info
+   * @param {Object} params.credentials - Steam credentials
+   * @param {Array} params.targets - Targets to send invites to
+   * @param {Object} params.options - Processing options
+   * 
+   * @returns {Object} Processing results
+   */
+  async processInvites(params) {
+    const { account, credentials, targets, options } = params;
+    const username = account.username || account.steam_login || 'unknown';
+    
+    this.logger.info(`[WORKER] Starting invite processing for ${username}`);
+    this.logger.info(`[WORKER] Targets: ${targets.length}, Max batch: ${options.max_invites_per_batch}`);
+
+    const result = {
+      success: false,
+      results: {
+        successful: [],
+        failed: [],
+        temporaryFailures: [],
+        limitReached: false,
+        invitationErrorCount: 0
+      },
+      account_updates: {
+        slots_used: 0,
+        new_overall_slots: account.overall_friend_slots,
+        cleanup_performed: false,
+        slots_freed: 0,
+        initialization_performed: false
+      },
+      cooldown_info: {
+        should_apply: false,
+        error_codes: [],
+        reason: null
+      }
+    };
+
+    let updatedAccount = { ...account };
+
+    try {
+      // Step 1: Connect to Steam
+      this.logger.info(`[WORKER] Connecting to Steam as ${username}...`);
+      const connectionResult = await this.steamConnector.connect(credentials);
+
+      if (!connectionResult.success) {
+        this.logger.error(`[WORKER] Connection failed: ${connectionResult.error}`);
+        
+        // Connection failure triggers cooldown
+        result.cooldown_info = {
+          should_apply: true,
+          error_codes: [],
+          reason: 'connection_failure'
+        };
+        
+        return result;
+      }
+
+      this.logger.info(`[WORKER] Connected successfully`);
+
+      // Step 2: Initialize overall_friend_slots if needed
+      if (updatedAccount.overall_friend_slots === null) {
+        this.logger.info(`[WORKER] Initializing friend slots for ${username}...`);
+        
+        const statsResult = await this.steamConnector.getAccountStatistics();
+        
+        if (statsResult.success) {
+          updatedAccount.overall_friend_slots = statsResult.stats.totalSlots;
+          result.account_updates.new_overall_slots = statsResult.stats.totalSlots;
+          result.account_updates.initialization_performed = true;
+          this.logger.info(`[WORKER] Slots initialized: ${statsResult.stats.totalSlots}/300 used`);
+        } else {
+          throw new Error(`Slots initialization failed: ${statsResult.error}`);
+        }
+      }
+
+      // Step 3: Calculate account capacity
+      const capacity = this.calculateAccountCapacity(
+        updatedAccount, 
+        options.max_invites_per_batch
+      );
+
+      this.logger.info(`[WORKER] Account capacity: can_send=${capacity.can_send}, max_sendable=${capacity.max_sendable}, needs_cleanup=${capacity.needs_cleanup}`);
+
+      if (!capacity.can_send) {
+        this.logger.warn(`[WORKER] Account cannot send invites (weekly_limited=${capacity.weekly_limited})`);
+        result.results.limitReached = true;
+        result.success = true;
+        return result;
+      }
+
+      // Step 4: Perform cleanup if needed
+      if (capacity.needs_cleanup && capacity.cleanup_needed > 0) {
+        this.logger.info(`[WORKER] Cleanup needed: freeing ${capacity.cleanup_needed} slots...`);
+        
+        const cleanupResult = await this.inviteCleaner.cleanupOldInvites(
+          this.steamConnector,
+          capacity.cleanup_needed
+        );
+
+        if (cleanupResult.success) {
+          updatedAccount.overall_friend_slots = cleanupResult.new_overall_slots;
+          result.account_updates.new_overall_slots = cleanupResult.new_overall_slots;
+          result.account_updates.cleanup_performed = true;
+          result.account_updates.slots_freed = cleanupResult.slots_freed;
+          this.logger.info(`[WORKER] Cleanup successful: freed ${cleanupResult.slots_freed} slots`);
+        } else {
+          this.logger.warn(`[WORKER] Cleanup failed: ${cleanupResult.error}`);
+        }
+      }
+
+      // Recalculate capacity after cleanup
+      const finalCapacity = this.calculateAccountCapacity(
+        updatedAccount,
+        options.max_invites_per_batch
+      );
+
+      const actualBatchSize = Math.min(targets.length, finalCapacity.max_sendable);
+      const targetsToProcess = targets.slice(0, actualBatchSize);
+
+      this.logger.info(`[WORKER] Sending ${targetsToProcess.length} invites...`);
+
+      // Step 5: Send invites with early detection
+      const inviteResults = await this.sendInvitesWithEarlyDetection(
+        targetsToProcess,
+        options.delay_between_invites_ms || 2000
+      );
+
+      // Step 6: Process results
+      result.results = inviteResults;
+      result.success = true;
+
+      // Update account slots based on successful invites
+      const slotsUsed = inviteResults.successful.length;
+      result.account_updates.slots_used = slotsUsed;
+      result.account_updates.new_overall_slots = updatedAccount.overall_friend_slots + slotsUsed;
+
+      // Step 7: Determine if cooldown should be applied
+      if (inviteResults.invitationErrorCount > 0) {
+        result.cooldown_info = {
+          should_apply: true,
+          error_codes: this.extractErrorCodes(inviteResults.failed),
+          reason: 'invitation_errors'
+        };
+      }
+
+      this.logger.info(`[WORKER] Processing complete: ${inviteResults.successful.length} successful, ${inviteResults.failed.length} failed`);
+
+      return result;
+
+    } catch (error) {
+      this.logger.error(`[WORKER] Processing failed: ${error.message}`);
+      result.success = false;
+      result.error = error.message;
+      return result;
+
+    } finally {
+      // Always disconnect
+      await this.steamConnector.disconnect();
+      this.logger.info(`[WORKER] Disconnected from Steam`);
+    }
+  }
+
+  /**
+   * Calculate account capacity based on weekly and overall limits
+   */
+  calculateAccountCapacity(account, requestedCount) {
+    const weeklySlots = account.weekly_invite_slots || 0;
+    const overallSlots = account.overall_friend_slots;
+
+    if (weeklySlots <= 0) {
+      return {
+        can_send: false,
+        max_sendable: 0,
+        needs_cleanup: false,
+        cleanup_needed: 0,
+        weekly_limited: true,
+        overall_limited: false
+      };
+    }
+
+    if (overallSlots === null) {
+      return {
+        can_send: true,
+        max_sendable: Math.min(requestedCount, weeklySlots),
+        needs_cleanup: false,
+        cleanup_needed: 0,
+        weekly_limited: false,
+        overall_limited: false
+      };
+    }
+
+    const MAX_OVERALL_SLOTS = 300;
+    const SAFETY_MARGIN = 30;
+    const EFFECTIVE_LIMIT = MAX_OVERALL_SLOTS - SAFETY_MARGIN;
+
+    const availableOverallSlots = EFFECTIVE_LIMIT - overallSlots;
+
+    if (availableOverallSlots <= 0) {
+      const cleanupNeeded = Math.abs(availableOverallSlots) + Math.min(requestedCount, weeklySlots);
+      return {
+        can_send: true,
+        max_sendable: Math.min(requestedCount, weeklySlots),
+        needs_cleanup: true,
+        cleanup_needed: cleanupNeeded,
+        weekly_limited: false,
+        overall_limited: true
+      };
+    }
+
+    const maxSendable = Math.min(requestedCount, weeklySlots, availableOverallSlots);
+
+    return {
+      can_send: true,
+      max_sendable: maxSendable,
+      needs_cleanup: false,
+      cleanup_needed: 0,
+      weekly_limited: weeklySlots < requestedCount,
+      overall_limited: availableOverallSlots < requestedCount
+    };
+  }
+
+  /**
+   * Send invites with early detection of critical errors (15, 25)
+   */
+  async sendInvitesWithEarlyDetection(targets, delayMs) {
+    const results = {
+      successful: [],
+      failed: [],
+      temporaryFailures: [],
+      limitReached: false,
+      invitationErrorCount: 0
+    };
+
+    const criticalErrorCodes = [15, 25]; // AccessDenied, LimitExceeded
+
+    for (let i = 0; i < targets.length; i++) {
+      const target = targets[i];
+      
+      try {
+        const inviteResult = await this.steamConnector.addFriend(target.slug);
+
+        if (inviteResult.success) {
+          results.successful.push(target.slug);
+          this.logger.debug(`[WORKER] ✓ Invite sent to ${target.slug}`);
+        } else {
+          const errorCode = inviteResult.eresult;
+          const errorType = this.classifyError(errorCode, inviteResult.error);
+
+          results.failed.push({
+            steamId: target.slug,
+            error: inviteResult.error,
+            errorCode: errorCode,
+            errorType: errorType
+          });
+
+          // Check for critical errors (early detection)
+          if (criticalErrorCodes.includes(errorCode)) {
+            results.invitationErrorCount++;
+            this.logger.warn(`[WORKER] Critical error ${errorCode} detected, stopping batch processing`);
+            
+            // Return remaining targets as temporary failures
+            for (let j = i + 1; j < targets.length; j++) {
+              results.temporaryFailures.push(targets[j].slug);
+            }
+            
+            break;
+          }
+
+          this.logger.debug(`[WORKER] ✗ Invite failed for ${target.slug}: ${inviteResult.error} (code: ${errorCode})`);
+        }
+
+      } catch (error) {
+        this.logger.error(`[WORKER] Exception sending invite to ${target.slug}: ${error.message}`);
+        results.failed.push({
+          steamId: target.slug,
+          error: error.message,
+          errorCode: null,
+          errorType: 'temporary'
+        });
+      }
+
+      // Delay between invites (except after last one)
+      if (i < targets.length - 1) {
+        await this.wait(delayMs);
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Classify error as 'temporary' or 'definitive'
+   */
+  classifyError(errorCode, errorMessage) {
+    // Definitive errors (don't retry)
+    const definitiveErrors = [
+      14, // Already friends
+      40, // Blocked
+      84, // Invalid Steam ID
+      17  // Banned
+    ];
+
+    // Temporary errors (should retry)
+    const temporaryErrors = [
+      15, // AccessDenied (rate limit)
+      25, // LimitExceeded
+      29  // Timeout
+    ];
+
+    if (definitiveErrors.includes(errorCode)) {
+      return 'definitive';
+    }
+
+    if (temporaryErrors.includes(errorCode)) {
+      return 'temporary';
+    }
+
+    // Default to temporary for unknown errors
+    return 'temporary';
+  }
+
+  /**
+   * Extract error codes from failed results
+   */
+  extractErrorCodes(failedResults) {
+    const codes = failedResults
+      .map(f => f.errorCode)
+      .filter(code => code !== null && code !== undefined);
+    
+    return [...new Set(codes)]; // Unique codes
+  }
+
+  /**
+   * Wait helper
+   */
+  async wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+module.exports = WorkerLogic;
