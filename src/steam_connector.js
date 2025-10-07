@@ -164,16 +164,66 @@ class SteamConnector {
       };
     }
 
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        resolve({
-          success: false,
-          error: 'Friend invite timeout',
-          eresult: 29
-        });
+    return new Promise(async (resolve) => {
+      let timeoutOccurred = false;
+      
+      const timeout = setTimeout(async () => {
+        timeoutOccurred = true;
+        
+        // Timeout occurred - verify if invite was actually sent
+        this.logger.warn(`[STEAM] Timeout sending invite to ${steamId}, verifying...`);
+        
+        // Wait a bit for Steam to sync
+        await this.wait(2000);
+        
+        // Check friends list to see if invite is there
+        const verification = await this.verifyInviteStatus(steamId);
+        
+        if (!verification.canVerify) {
+          this.logger.warn(`[STEAM] Cannot verify invite status for ${steamId}: ${verification.error}`);
+          resolve({
+            success: false,
+            error: 'Friend invite timeout (verification failed)',
+            eresult: 29,
+            errorType: 'temporary'
+          });
+          return;
+        }
+        
+        if (verification.inviteSent) {
+          this.logger.info(`[STEAM] ✓ Verification: invite to ${steamId} WAS sent despite timeout`);
+          resolve({
+            success: true,
+            message: 'Invite sent (verified after timeout)',
+            eresult: 1,
+            verifiedAfterTimeout: true
+          });
+        } else if (verification.alreadyFriends) {
+          this.logger.info(`[STEAM] ✓ Verification: ${steamId} is already friends`);
+          resolve({
+            success: false,
+            error: 'Already friends with this user',
+            eresult: 14,
+            errorType: 'definitive'
+          });
+        } else {
+          this.logger.warn(`[STEAM] ✗ Verification: invite to ${steamId} was NOT sent`);
+          resolve({
+            success: false,
+            error: 'Friend invite timeout (verified not sent)',
+            eresult: 29,
+            errorType: 'temporary'
+          });
+        }
       }, 30000);
 
       this.client.addFriend(steamId, (err, personaName) => {
+        // If timeout already occurred, don't process callback
+        if (timeoutOccurred) {
+          this.logger.debug(`[STEAM] Received late callback for ${steamId}, ignoring (already handled by timeout)`);
+          return;
+        }
+        
         clearTimeout(timeout);
         
         if (err) {
@@ -430,6 +480,35 @@ class SteamConnector {
    */
   async wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Verify if an invite was actually sent (used after timeout)
+   */
+  async verifyInviteStatus(steamId) {
+    try {
+      const friendsList = await this.getFriendsList();
+      
+      if (!friendsList.success) {
+        return { inviteSent: false, canVerify: false, error: 'Cannot get friends list' };
+      }
+      
+      // Check if steamId is in pending invites (relationship = 4 or 2)
+      const isPending = friendsList.pendingInvites.some(invite => invite.steamId === steamId);
+      
+      // Also check if already friends (relationship = 3)
+      const isFriend = friendsList.confirmedFriends.some(friend => friend.steamId === steamId);
+      
+      return { 
+        inviteSent: isPending,
+        alreadyFriends: isFriend,
+        canVerify: true
+      };
+      
+    } catch (error) {
+      this.logger.error(`[STEAM] Error verifying invite status: ${error.message}`);
+      return { inviteSent: false, canVerify: false, error: error.message };
+    }
   }
 }
 
