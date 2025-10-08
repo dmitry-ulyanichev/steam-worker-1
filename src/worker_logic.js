@@ -278,6 +278,12 @@ class WorkerLogic {
             errorType: errorType
           });
 
+          // NEW: Set limitReached=true for errors 25 and 84
+          if (errorCode === 25 || errorCode === 84 || inviteResult.limitReached) {
+            results.limitReached = true;
+            this.logger.warn(`[WORKER] Account limit reached (error ${errorCode}), marking account for weekly reset`);
+          }
+
           // Check for critical errors (early detection)
           if (criticalErrorCodes.includes(errorCode)) {
             results.invitationErrorCount++;
