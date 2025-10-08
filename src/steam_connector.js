@@ -250,12 +250,12 @@ class SteamConnector {
     // Error code mapping
     const errorMap = {
       14: { type: 'definitive', message: 'Already friends', limitReached: false },
-      15: { type: 'temporary', message: 'Access denied (rate limit)', limitReached: true },
+      15: { type: 'temporary', message: 'Access denied (rate limit)', limitReached: false },  // Changed: limitReached should be false for error 15
       17: { type: 'definitive', message: 'Account banned', limitReached: false },
-      25: { type: 'temporary', message: 'Limit exceeded', limitReached: true },
+      25: { type: 'temporary', message: 'Limit exceeded', limitReached: true },  // Account-specific limit
       29: { type: 'temporary', message: 'Timeout', limitReached: false },
       40: { type: 'definitive', message: 'Blocked by user', limitReached: false },
-      84: { type: 'definitive', message: 'Invalid Steam ID', limitReached: false }
+      84: { type: 'temporary', message: 'Rate limit reached', limitReached: true }  // Changed: type should be temporary, limitReached should be true
     };
     
     const errorInfo = errorMap[eresult] || { 

@@ -1,0 +1,1 @@
+Variables de entorno: LINK_HARVESTER_API_KEY, STEAM_WORKER_PORT
