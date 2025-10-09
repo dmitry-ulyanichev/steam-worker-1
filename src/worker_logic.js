@@ -188,6 +188,8 @@ class WorkerLogic {
 
   /**
    * Calculate account capacity based on weekly and overall limits
+   * 
+   * UPDATED: Uses full 300 limit and calculates cleanup dynamically
    */
   calculateAccountCapacity(account, requestedCount) {
     const weeklySlots = account.weekly_invite_slots || 0;
@@ -216,33 +218,38 @@ class WorkerLogic {
     }
 
     const MAX_OVERALL_SLOTS = 300;
-    const SAFETY_MARGIN = 30;
-    const EFFECTIVE_LIMIT = MAX_OVERALL_SLOTS - SAFETY_MARGIN;
 
-    const availableOverallSlots = EFFECTIVE_LIMIT - overallSlots;
+    // Calculate how many we can actually send (limited by weekly slots)
+    const maxSendable = Math.min(requestedCount, weeklySlots);
 
-    if (availableOverallSlots <= 0) {
-      const cleanupNeeded = Math.abs(availableOverallSlots) + Math.min(requestedCount, weeklySlots);
+    // Calculate if we need cleanup to accommodate this batch
+    const slotsAfterSending = overallSlots + maxSendable;
+    
+    if (slotsAfterSending <= MAX_OVERALL_SLOTS) {
+      // No cleanup needed - we fit within the 300 limit
       return {
         can_send: true,
-        max_sendable: Math.min(requestedCount, weeklySlots),
+        max_sendable: maxSendable,
+        needs_cleanup: false,
+        cleanup_needed: 0,
+        weekly_limited: weeklySlots < requestedCount,
+        overall_limited: false
+      };
+    } else {
+      // Cleanup needed: we need to free enough slots to accommodate the batch
+      // Formula: cleanup_needed = current_slots - (300 - max_sendable)
+      const targetSlotsBeforeInvites = MAX_OVERALL_SLOTS - maxSendable;
+      const cleanupNeeded = overallSlots - targetSlotsBeforeInvites;
+      
+      return {
+        can_send: true,
+        max_sendable: maxSendable,
         needs_cleanup: true,
         cleanup_needed: cleanupNeeded,
-        weekly_limited: false,
+        weekly_limited: weeklySlots < requestedCount,
         overall_limited: true
       };
     }
-
-    const maxSendable = Math.min(requestedCount, weeklySlots, availableOverallSlots);
-
-    return {
-      can_send: true,
-      max_sendable: maxSendable,
-      needs_cleanup: false,
-      cleanup_needed: 0,
-      weekly_limited: weeklySlots < requestedCount,
-      overall_limited: availableOverallSlots < requestedCount
-    };
   }
 
   /**
