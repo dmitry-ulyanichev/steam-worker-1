@@ -246,8 +246,8 @@ class WorkerLogic {
   }
 
   /**
-   * Send invites with early detection of critical errors (15, 25)
-   * CHANGED: Separated error counting - error 15 triggers cooldown, errors 25/84 only mark account as limited
+   * Send invites with early detection of critical errors (15, 25, 84)
+   * CHANGED: Both error types stop processing, but only error 15 triggers worker cooldown
    */
   async sendInvitesWithEarlyDetection(targets, delayMs) {
     const results = {
@@ -258,9 +258,9 @@ class WorkerLogic {
       invitationErrorCount: 0  // CHANGED: Now only counts error 15 (rate limit)
     };
 
-    // CHANGED: Only error 15 is critical for worker cooldown
-    const workerCooldownErrors = [15]; // AccessDenied (rate limit)
-    const accountLimitErrors = [25, 84]; // LimitExceeded, RateLimitExceeded
+    // CHANGED: Separate errors that trigger cooldown vs account limits
+    const workerCooldownErrors = [15]; // AccessDenied (rate limit) - triggers worker cooldown
+    const accountLimitErrors = [25, 84]; // LimitExceeded, RateLimitExceeded - only marks account
 
     for (let i = 0; i < targets.length; i++) {
       const target = targets[i];
@@ -288,7 +288,7 @@ class WorkerLogic {
             this.logger.warn(`[WORKER] Account limit reached (error ${errorCode}), marking account for weekly reset`);
           }
 
-          // CHANGED: Only count error 15 for worker cooldown (not 25/84)
+          // CHANGED: Error 15 triggers cooldown AND stops processing
           if (workerCooldownErrors.includes(errorCode)) {
             results.invitationErrorCount++;
             this.logger.warn(`[WORKER] Rate limit error ${errorCode} detected, stopping batch processing and triggering cooldown`);
@@ -301,9 +301,16 @@ class WorkerLogic {
             break;
           }
 
-          // CHANGED: For errors 25/84, log but DON'T stop processing or trigger cooldown
+          // CHANGED: Errors 25/84 stop processing but DON'T trigger cooldown
           if (accountLimitErrors.includes(errorCode)) {
-            this.logger.warn(`[WORKER] Account limit error ${errorCode} detected, continuing with remaining targets`);
+            this.logger.warn(`[WORKER] Account limit error ${errorCode} detected, stopping batch processing WITHOUT cooldown`);
+            
+            // Return remaining targets as temporary failures
+            for (let j = i + 1; j < targets.length; j++) {
+              results.temporaryFailures.push(targets[j].slug);
+            }
+            
+            break;
           }
 
           this.logger.debug(`[WORKER] ✗ Invite failed for ${target.slug}: ${inviteResult.error} (code: ${errorCode})`);
