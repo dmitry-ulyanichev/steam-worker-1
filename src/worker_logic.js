@@ -160,6 +160,7 @@ class WorkerLogic {
       result.account_updates.new_overall_slots = updatedAccount.overall_friend_slots + slotsUsed;
 
       // Step 7: Determine if cooldown should be applied
+      // CHANGED: Only apply cooldown for error 15 (rate limiting), NOT for errors 25/84 (account limits)
       if (inviteResults.invitationErrorCount > 0) {
         result.cooldown_info = {
           should_apply: true,
@@ -246,6 +247,7 @@ class WorkerLogic {
 
   /**
    * Send invites with early detection of critical errors (15, 25)
+   * CHANGED: Separated error counting - error 15 triggers cooldown, errors 25/84 only mark account as limited
    */
   async sendInvitesWithEarlyDetection(targets, delayMs) {
     const results = {
@@ -253,10 +255,12 @@ class WorkerLogic {
       failed: [],
       temporaryFailures: [],
       limitReached: false,
-      invitationErrorCount: 0
+      invitationErrorCount: 0  // CHANGED: Now only counts error 15 (rate limit)
     };
 
-    const criticalErrorCodes = [15, 25]; // AccessDenied, LimitExceeded
+    // CHANGED: Only error 15 is critical for worker cooldown
+    const workerCooldownErrors = [15]; // AccessDenied (rate limit)
+    const accountLimitErrors = [25, 84]; // LimitExceeded, RateLimitExceeded
 
     for (let i = 0; i < targets.length; i++) {
       const target = targets[i];
@@ -278,16 +282,16 @@ class WorkerLogic {
             errorType: errorType
           });
 
-          // NEW: Set limitReached=true for errors 25 and 84
-          if (errorCode === 25 || errorCode === 84 || inviteResult.limitReached) {
+          // CHANGED: Set limitReached=true for errors 25 and 84 (account-specific limits)
+          if (accountLimitErrors.includes(errorCode) || inviteResult.limitReached) {
             results.limitReached = true;
             this.logger.warn(`[WORKER] Account limit reached (error ${errorCode}), marking account for weekly reset`);
           }
 
-          // Check for critical errors (early detection)
-          if (criticalErrorCodes.includes(errorCode)) {
+          // CHANGED: Only count error 15 for worker cooldown (not 25/84)
+          if (workerCooldownErrors.includes(errorCode)) {
             results.invitationErrorCount++;
-            this.logger.warn(`[WORKER] Critical error ${errorCode} detected, stopping batch processing`);
+            this.logger.warn(`[WORKER] Rate limit error ${errorCode} detected, stopping batch processing and triggering cooldown`);
             
             // Return remaining targets as temporary failures
             for (let j = i + 1; j < targets.length; j++) {
@@ -295,6 +299,11 @@ class WorkerLogic {
             }
             
             break;
+          }
+
+          // CHANGED: For errors 25/84, log but DON'T stop processing or trigger cooldown
+          if (accountLimitErrors.includes(errorCode)) {
+            this.logger.warn(`[WORKER] Account limit error ${errorCode} detected, continuing with remaining targets`);
           }
 
           this.logger.debug(`[WORKER] ✗ Invite failed for ${target.slug}: ${inviteResult.error} (code: ${errorCode})`);
@@ -327,7 +336,6 @@ class WorkerLogic {
     const definitiveErrors = [
       14, // Already friends
       40, // Blocked
-      84, // Invalid Steam ID
       17  // Banned
     ];
 
@@ -335,7 +343,8 @@ class WorkerLogic {
     const temporaryErrors = [
       15, // AccessDenied (rate limit)
       25, // LimitExceeded
-      29  // Timeout
+      29, // Timeout
+      84  // RateLimitExceeded
     ];
 
     if (definitiveErrors.includes(errorCode)) {
