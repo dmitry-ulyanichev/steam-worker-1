@@ -119,7 +119,7 @@ class WorkerLogic {
         
         const cleanupResult = await this.inviteCleaner.cleanupOldInvites(
           this.steamConnector, 
-          cleanupNeeded,
+          capacity.cleanup_needed,
           options.oldest_pending_invites || []
         );
 
