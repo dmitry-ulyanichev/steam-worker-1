@@ -302,11 +302,13 @@ class SteamConnector {
             relationshipType = 'friend';
             break;
           case 4:
-          case 2:
             relationshipType = 'invite_sent';
             break;
           case 1:
             relationshipType = 'invite_received';
+            break;
+          case 2:
+            relationshipType = 'ignored'; // Previously incorrectly treated as invite_sent
             break;
           default:
             relationshipType = 'unknown';
@@ -322,6 +324,7 @@ class SteamConnector {
       const confirmedFriends = friendsData.filter(f => f.relationshipType === 'friend');
       const pendingInvites = friendsData.filter(f => f.relationshipType === 'invite_sent');
       const receivedInvites = friendsData.filter(f => f.relationshipType === 'invite_received');
+      const ignoredUsers = friendsData.filter(f => f.relationshipType === 'ignored');
       
       return {
         success: true,
@@ -329,6 +332,7 @@ class SteamConnector {
         confirmedFriends: confirmedFriends,
         pendingInvites: pendingInvites,
         receivedInvites: receivedInvites,
+        ignoredUsers: ignoredUsers,
         allFriends: friendsData
       };
       
