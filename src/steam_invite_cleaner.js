@@ -104,23 +104,29 @@ class SteamInviteCleaner {
     };
   }
 
-  /**
-   * Select oldest pending invites to cancel
-   */
   selectInvitesToCancel(pendingInvites, slotsNeeded) {
-    if (pendingInvites.length === 0) {
+    // Filter out invites without valid timestamps
+    const validInvites = pendingInvites.filter(invite => {
+      const hasFriendSince = invite.friend_since && invite.friend_since > 0;
+      if (!hasFriendSince) {
+        this.logger.debug(`[CLEANER] Skipping invite ${invite.steamId} - no valid friend_since timestamp`);
+      }
+      return hasFriendSince;
+    });
+    
+    if (validInvites.length === 0) {
+      this.logger.warn(`[CLEANER] No invites with valid timestamps found`);
       return [];
     }
-
-    // Sort by friend_since if available (oldest first)
-    const sorted = [...pendingInvites].sort((a, b) => {
-      const timeA = a.friend_since || 0;
-      const timeB = b.friend_since || 0;
-      return timeA - timeB;
+    
+    // Sort by friend_since (oldest first)
+    const sorted = [...validInvites].sort((a, b) => {
+      return (a.friend_since || 0) - (b.friend_since || 0);
     });
-
-    // Take only what we need
+    
     const toCancel = sorted.slice(0, slotsNeeded);
+    
+    this.logger.info(`[CLEANER] Selected ${toCancel.length} oldest invites (from ${validInvites.length} valid)`);
     
     return toCancel.map(invite => invite.steamId);
   }
