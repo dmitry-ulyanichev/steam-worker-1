@@ -137,7 +137,7 @@ class WorkerLogic {
       // Recalculate capacity after cleanup
       const finalCapacity = this.calculateAccountCapacity(
         updatedAccount,
-        options.max_invites_per_batch
+        targets.length
       );
 
       const actualBatchSize = Math.min(targets.length, finalCapacity.max_sendable);
