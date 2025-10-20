@@ -1,4 +1,4 @@
-// steam_worker/src/steam_invite_cleaner.js
+// steam_worker/src/steam_invite_cleaner.js 
 
 /**
  * Steam Invite Cleaner for worker instances
@@ -14,11 +14,16 @@ class SteamInviteCleaner {
    * 
    * @param {Object} steamConnector - SteamConnector instance (already connected)
    * @param {number} slotsToFree - Number of slots that need to be freed
+   * @param {Array} oldestPendingInvites - Steam IDs from DB (oldest first) for prioritization
    * @returns {Promise<Object>} Cleanup result
    */
-  async cleanupOldInvites(steamConnector, slotsToFree) {
+  async cleanupOldInvites(steamConnector, slotsToFree, oldestPendingInvites = []) {
     try {
       this.logger.info(`[CLEANER] Starting cleanup: need to free ${slotsToFree} slots`);
+      
+      if (oldestPendingInvites && oldestPendingInvites.length > 0) {
+        this.logger.info(`[CLEANER] Received ${oldestPendingInvites.length} oldest invites from DB for prioritization`);
+      }
 
       // Step 1: Get current friends list from Steam
       const friendsResult = await steamConnector.getFriendsList();
@@ -31,10 +36,11 @@ class SteamInviteCleaner {
       const beforeBreakdown = this.calculateSlotBreakdown(friendsResult);
       this.logger.info(`[CLEANER] Current state: ${beforeBreakdown.total_used}/300 total (${beforeBreakdown.total_friends} friends, ${beforeBreakdown.pending_sent} pending sent)`);
 
-      // Step 2: Select oldest pending invites to cancel
+      // Step 2: Select oldest pending invites to cancel (with DB prioritization)
       const invitesToCancel = this.selectInvitesToCancel(
         friendsResult.pendingInvites, 
-        slotsToFree
+        slotsToFree,
+        oldestPendingInvites  // ← NUEVO: Pasar lista de la DB
       );
       
       if (invitesToCancel.length === 0) {
@@ -104,31 +110,56 @@ class SteamInviteCleaner {
     };
   }
 
-  selectInvitesToCancel(pendingInvites, slotsNeeded) {
-    // Filter out invites without valid timestamps
-    const validInvites = pendingInvites.filter(invite => {
-      const hasFriendSince = invite.friend_since && invite.friend_since > 0;
-      if (!hasFriendSince) {
-        this.logger.debug(`[CLEANER] Skipping invite ${invite.steamId} - no valid friend_since timestamp`);
-      }
-      return hasFriendSince;
-    });
-    
-    if (validInvites.length === 0) {
-      this.logger.warn(`[CLEANER] No invites with valid timestamps found`);
+  /**
+   * Select invites to cancel with DB prioritization
+   * 
+   * @param {Array} pendingInvites - Pending invites from Steam
+   * @param {number} slotsNeeded - Number of slots to free
+   * @param {Array} oldestPendingInvites - Steam IDs from DB (oldest first)
+   * @returns {Array} Steam IDs to cancel
+   */
+  selectInvitesToCancel(pendingInvites, slotsNeeded, oldestPendingInvites = []) {
+    if (pendingInvites.length === 0) {
+      this.logger.warn(`[CLEANER] No pending invites found in Steam`);
       return [];
     }
-    
-    // Sort by friend_since (oldest first)
-    const sorted = [...validInvites].sort((a, b) => {
-      return (a.friend_since || 0) - (b.friend_since || 0);
-    });
-    
-    const toCancel = sorted.slice(0, slotsNeeded);
-    
-    this.logger.info(`[CLEANER] Selected ${toCancel.length} oldest invites (from ${validInvites.length} valid)`);
-    
-    return toCancel.map(invite => invite.steamId);
+
+    const toCancel = [];
+    const pendingSteamIds = new Set(pendingInvites.map(inv => inv.steamId));
+
+    this.logger.info(`[CLEANER] Found ${pendingInvites.length} pending invites in Steam, need to cancel ${slotsNeeded}`);
+
+    // Priority 1: Cancel from oldestPendingInvites (from DB) that exist in Steam's pending list
+    if (oldestPendingInvites && oldestPendingInvites.length > 0) {
+      this.logger.info(`[CLEANER] Priority 1: Checking ${oldestPendingInvites.length} oldest invites from DB...`);
+      
+      for (const steamId of oldestPendingInvites) {
+        if (toCancel.length >= slotsNeeded) break;
+        
+        if (pendingSteamIds.has(steamId)) {
+          toCancel.push(steamId);
+          pendingSteamIds.delete(steamId); // Remove to avoid duplicates
+        }
+      }
+      
+      this.logger.info(`[CLEANER] Priority 1 result: ${toCancel.length} invites selected from DB list`);
+    }
+
+    // Priority 2: If we still need more cancellations, take any remaining pending invites
+    if (toCancel.length < slotsNeeded) {
+      const remainingNeeded = slotsNeeded - toCancel.length;
+      const remaining = Array.from(pendingSteamIds).slice(0, remainingNeeded);
+      
+      this.logger.info(`[CLEANER] Priority 2: Need ${remainingNeeded} more, selecting from remaining ${pendingSteamIds.size} invites...`);
+      
+      toCancel.push(...remaining);
+      
+      this.logger.info(`[CLEANER] Priority 2 result: ${remaining.length} additional invites selected`);
+    }
+
+    this.logger.info(`[CLEANER] Final selection: ${toCancel.length} invites to cancel (${Math.min(oldestPendingInvites?.length || 0, slotsNeeded)} from DB priority, ${toCancel.length - Math.min(oldestPendingInvites?.length || 0, toCancel.length)} from fallback)`);
+
+    return toCancel;
   }
 
   /**

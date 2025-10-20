@@ -100,8 +100,8 @@ class WorkerLogic {
 
       // Step 3: Calculate account capacity
       const capacity = this.calculateAccountCapacity(
-        updatedAccount, 
-        options.max_invites_per_batch
+        updatedAccount,
+        targets.length
       );
 
       this.logger.info(`[WORKER] Account capacity: can_send=${capacity.can_send}, max_sendable=${capacity.max_sendable}, needs_cleanup=${capacity.needs_cleanup}`);
@@ -118,8 +118,9 @@ class WorkerLogic {
         this.logger.info(`[WORKER] Cleanup needed: freeing ${capacity.cleanup_needed} slots...`);
         
         const cleanupResult = await this.inviteCleaner.cleanupOldInvites(
-          this.steamConnector,
-          capacity.cleanup_needed
+          this.steamConnector, 
+          cleanupNeeded,
+          options.oldest_pending_invites || []
         );
 
         if (cleanupResult.success) {
@@ -195,7 +196,14 @@ class WorkerLogic {
     const weeklySlots = account.weekly_invite_slots || 0;
     const overallSlots = account.overall_friend_slots;
 
+    // DEBUG: Log all input parameters
+    this.logger.info(`[WORKER] [DEBUG] calculateAccountCapacity called with:`);
+    this.logger.info(`[WORKER] [DEBUG]   requestedCount = ${requestedCount}`);
+    this.logger.info(`[WORKER] [DEBUG]   weeklySlots = ${weeklySlots}`);
+    this.logger.info(`[WORKER] [DEBUG]   overallSlots = ${overallSlots}`);
+
     if (weeklySlots <= 0) {
+      this.logger.info(`[WORKER] [DEBUG] Result: cannot send (weeklySlots <= 0)`);
       return {
         can_send: false,
         max_sendable: 0,
@@ -207,9 +215,11 @@ class WorkerLogic {
     }
 
     if (overallSlots === null) {
+      const maxSendable = Math.min(requestedCount, weeklySlots);
+      this.logger.info(`[WORKER] [DEBUG] Result: overallSlots=null, maxSendable=${maxSendable}`);
       return {
         can_send: true,
-        max_sendable: Math.min(requestedCount, weeklySlots),
+        max_sendable: maxSendable,
         needs_cleanup: false,
         cleanup_needed: 0,
         weekly_limited: false,
@@ -221,11 +231,14 @@ class WorkerLogic {
 
     // Calculate how many we can actually send (limited by weekly slots)
     const maxSendable = Math.min(requestedCount, weeklySlots);
+    this.logger.info(`[WORKER] [DEBUG]   maxSendable = min(${requestedCount}, ${weeklySlots}) = ${maxSendable}`);
 
     // Calculate if we need cleanup to accommodate this batch
     const slotsAfterSending = overallSlots + maxSendable;
+    this.logger.info(`[WORKER] [DEBUG]   slotsAfterSending = ${overallSlots} + ${maxSendable} = ${slotsAfterSending}`);
     
     if (slotsAfterSending <= MAX_OVERALL_SLOTS) {
+      this.logger.info(`[WORKER] [DEBUG] Result: No cleanup needed (${slotsAfterSending} <= ${MAX_OVERALL_SLOTS})`);
       // No cleanup needed - we fit within the 300 limit
       return {
         can_send: true,
@@ -237,9 +250,13 @@ class WorkerLogic {
       };
     } else {
       // Cleanup needed: we need to free enough slots to accommodate the batch
-      // Formula: cleanup_needed = current_slots - (300 - max_sendable)
       const targetSlotsBeforeInvites = MAX_OVERALL_SLOTS - maxSendable;
       const cleanupNeeded = overallSlots - targetSlotsBeforeInvites;
+      
+      this.logger.info(`[WORKER] [DEBUG] Cleanup calculation:`);
+      this.logger.info(`[WORKER] [DEBUG]   targetSlotsBeforeInvites = ${MAX_OVERALL_SLOTS} - ${maxSendable} = ${targetSlotsBeforeInvites}`);
+      this.logger.info(`[WORKER] [DEBUG]   cleanupNeeded = ${overallSlots} - ${targetSlotsBeforeInvites} = ${cleanupNeeded}`);
+      this.logger.info(`[WORKER] [DEBUG] Result: needs_cleanup=true, cleanup_needed=${cleanupNeeded}`);
       
       return {
         can_send: true,
