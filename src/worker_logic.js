@@ -227,7 +227,7 @@ class WorkerLogic {
       };
     }
 
-    const MAX_OVERALL_SLOTS = 300;
+    const MAX_OVERALL_SLOTS = 250;
 
     // Calculate how many we can actually send (limited by weekly slots)
     const maxSendable = Math.min(requestedCount, weeklySlots);
@@ -239,7 +239,7 @@ class WorkerLogic {
     
     if (slotsAfterSending <= MAX_OVERALL_SLOTS) {
       this.logger.info(`[WORKER] [DEBUG] Result: No cleanup needed (${slotsAfterSending} <= ${MAX_OVERALL_SLOTS})`);
-      // No cleanup needed - we fit within the 300 limit
+      // No cleanup needed - we fit within the 250 limit
       return {
         can_send: true,
         max_sendable: maxSendable,
