@@ -359,7 +359,7 @@ class SteamConnector {
       confirmedFriends: friendsList.confirmedFriends.length,
       pendingInvitesSent: friendsList.pendingInvites.length,
       pendingInvitesReceived: friendsList.receivedInvites.length,
-      availableSlots: Math.max(0, 300 - friendsList.totalFriends),
+      availableSlots: Math.max(0, 250 - friendsList.totalFriends),
       needsCleanup: friendsList.totalFriends > 270,
       slotsToFree: Math.max(0, friendsList.totalFriends - 270)
     };

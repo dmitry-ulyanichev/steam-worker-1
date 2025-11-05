@@ -34,7 +34,7 @@ class SteamInviteCleaner {
 
       // Calculate current breakdown
       const beforeBreakdown = this.calculateSlotBreakdown(friendsResult);
-      this.logger.info(`[CLEANER] Current state: ${beforeBreakdown.total_used}/300 total (${beforeBreakdown.total_friends} friends, ${beforeBreakdown.pending_sent} pending sent)`);
+      this.logger.info(`[CLEANER] Current state: ${beforeBreakdown.total_used}/250 total (${beforeBreakdown.total_friends} friends, ${beforeBreakdown.pending_sent} pending sent)`);
 
       // Step 2: Select oldest pending invites to cancel (with DB prioritization)
       const invitesToCancel = this.selectInvitesToCancel(
@@ -72,7 +72,7 @@ class SteamInviteCleaner {
         const afterBreakdown = this.calculateSlotBreakdown(updatedFriendsResult);
         newOverallSlots = afterBreakdown.total_used;
         
-        this.logger.info(`[CLEANER] After cleanup: ${afterBreakdown.total_used}/300 total (freed ${beforeBreakdown.total_used - afterBreakdown.total_used} slots)`);
+        this.logger.info(`[CLEANER] After cleanup: ${afterBreakdown.total_used}/250 total (freed ${beforeBreakdown.total_used - afterBreakdown.total_used} slots)`);
       } else {
         // Estimate based on successful cancellations
         newOverallSlots = beforeBreakdown.total_used - cancelResult.successful_cancellations;

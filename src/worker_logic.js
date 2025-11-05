@@ -82,20 +82,24 @@ class WorkerLogic {
 
       this.logger.info(`[WORKER] Connected successfully`);
 
-      // Step 2: Initialize overall_friend_slots if needed
-      if (updatedAccount.overall_friend_slots === null) {
-        this.logger.info(`[WORKER] Initializing friend slots for ${username}...`);
+      // Step 2: Refresh account statistics (always)
+      this.logger.info(`[WORKER] Refreshing account statistics for ${username}...`);
+
+      const statsResult = await this.steamConnector.getAccountStatistics();
+
+      if (statsResult.success) {
+        const previousSlots = updatedAccount.overall_friend_slots;
+        updatedAccount.overall_friend_slots = statsResult.stats.totalSlots;
+        result.account_updates.new_overall_slots = statsResult.stats.totalSlots;
+        result.account_updates.initialization_performed = (previousSlots === null);
         
-        const statsResult = await this.steamConnector.getAccountStatistics();
-        
-        if (statsResult.success) {
-          updatedAccount.overall_friend_slots = statsResult.stats.totalSlots;
-          result.account_updates.new_overall_slots = statsResult.stats.totalSlots;
-          result.account_updates.initialization_performed = true;
-          this.logger.info(`[WORKER] Slots initialized: ${statsResult.stats.totalSlots}/300 used`);
+        if (previousSlots !== null && previousSlots !== statsResult.stats.totalSlots) {
+          this.logger.info(`[WORKER] Slots updated: ${previousSlots} -> ${statsResult.stats.totalSlots}`);
         } else {
-          throw new Error(`Slots initialization failed: ${statsResult.error}`);
+          this.logger.info(`[WORKER] Current slots: ${statsResult.stats.totalSlots}/250 used`);
         }
+      } else {
+        throw new Error(`Account statistics refresh failed: ${statsResult.error}`);
       }
 
       // Step 3: Calculate account capacity
@@ -190,7 +194,7 @@ class WorkerLogic {
   /**
    * Calculate account capacity based on weekly and overall limits
    * 
-   * UPDATED: Uses full 300 limit and calculates cleanup dynamically
+   * UPDATED: Uses full 250 limit and calculates cleanup dynamically
    */
   calculateAccountCapacity(account, requestedCount) {
     const weeklySlots = account.weekly_invite_slots || 0;
