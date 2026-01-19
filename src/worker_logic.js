@@ -44,7 +44,8 @@ class WorkerLogic {
         failed: [],
         temporaryFailures: [],
         limitReached: false,
-        invitationErrorCount: 0
+        invitationErrorCount: 0,
+        accountBanned: false
       },
       account_updates: {
         slots_used: 0,
@@ -283,12 +284,14 @@ class WorkerLogic {
       failed: [],
       temporaryFailures: [],
       limitReached: false,
-      invitationErrorCount: 0  // CHANGED: Now only counts error 15 (rate limit)
+      invitationErrorCount: 0,
+      accountBanned: false
     };
 
-    // CHANGED: Separate errors that trigger cooldown vs account limits
+    // Separate error categories by handling behavior
     const workerCooldownErrors = [15]; // AccessDenied (rate limit) - triggers worker cooldown
     const accountLimitErrors = [25, 84]; // LimitExceeded, RateLimitExceeded - only marks account
+    const accountBannedErrors = [17]; // Account banned - stop immediately, flag for invite_friends
 
     for (let i = 0; i < targets.length; i++) {
       const target = targets[i];
@@ -329,15 +332,28 @@ class WorkerLogic {
             break;
           }
 
-          // CHANGED: Errors 25/84 stop processing but DON'T trigger cooldown
+          // Errors 25/84 stop processing but DON'T trigger cooldown
           if (accountLimitErrors.includes(errorCode)) {
             this.logger.warn(`[WORKER] Account limit error ${errorCode} detected, stopping batch processing WITHOUT cooldown`);
-            
+
             // Return remaining targets as temporary failures
             for (let j = i + 1; j < targets.length; j++) {
               results.temporaryFailures.push(targets[j].slug);
             }
-            
+
+            break;
+          }
+
+          // Error 17 (banned) - stop immediately, flag account for invite_friends to handle
+          if (accountBannedErrors.includes(errorCode)) {
+            results.accountBanned = true;
+            this.logger.warn(`[WORKER] Account BANNED (error ${errorCode}) detected, stopping batch processing immediately`);
+
+            // Return remaining targets as temporary failures (they weren't attempted)
+            for (let j = i + 1; j < targets.length; j++) {
+              results.temporaryFailures.push(targets[j].slug);
+            }
+
             break;
           }
 
